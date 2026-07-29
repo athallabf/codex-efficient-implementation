@@ -4,7 +4,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { createWriteStream, existsSync } from "node:fs";
-import { mkdir, readFile, realpath, readdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
 import { finished } from "node:stream/promises";
 import path from "node:path";
 import process from "node:process";
@@ -89,26 +89,113 @@ export function boundedPreview(buffer, budget, mode = "failure") {
   return { text, truncated: true, omittedBytes: Math.max(0, omitted) };
 }
 
-async function listUntracked(cwd) {
-  const result = spawnSync("git", ["ls-files", "--others", "--exclude-standard", "-z"], {
-    cwd, encoding: "buffer", shell: false,
+class BoundedCapture {
+  constructor(retainBytes) {
+    this.retainBytes = retainBytes;
+    this.headChunks = [];
+    this.headBytes = 0;
+    this.tail = Buffer.alloc(0);
+    this.bytes = 0;
+    this.newlines = 0;
+  }
+
+  add(chunk) {
+    const value = Buffer.from(chunk);
+    this.bytes += value.length;
+    for (const byte of value) {
+      if (byte === 10) this.newlines += 1;
+    }
+
+    if (this.headBytes < this.retainBytes) {
+      const remaining = this.retainBytes - this.headBytes;
+      const selected = value.subarray(0, remaining);
+      if (selected.length > 0) {
+        this.headChunks.push(Buffer.from(selected));
+        this.headBytes += selected.length;
+      }
+    }
+
+    if (value.length >= this.retainBytes) {
+      this.tail = Buffer.from(value.subarray(value.length - this.retainBytes));
+    } else {
+      const combined = this.tail.length === 0 ? value : Buffer.concat([this.tail, value]);
+      this.tail = combined.length > this.retainBytes
+        ? Buffer.from(combined.subarray(combined.length - this.retainBytes))
+        : Buffer.from(combined);
+    }
+  }
+
+  get head() {
+    return Buffer.concat(this.headChunks, this.headBytes);
+  }
+
+  get lines() {
+    return this.bytes === 0 ? 0 : this.newlines + 1;
+  }
+}
+
+function previewCapture(capture, budget, mode) {
+  const head = capture.head;
+  if (capture.bytes <= head.length) return boundedPreview(head, budget, mode);
+  if (budget <= 0) return { text: "", truncated: capture.bytes > 0, omittedBytes: capture.bytes };
+
+  let contentBudget = Math.max(0, budget - 128);
+  let text = "";
+  let omitted = capture.bytes;
+  while (contentBudget >= 0) {
+    const headBudget = mode === "failure" ? Math.floor(contentBudget * 0.3) : Math.floor(contentBudget * 0.15);
+    const tailBudget = contentBudget - headBudget;
+    omitted = capture.bytes - headBudget - tailBudget;
+    const marker = `\n[... ${omitted} bytes omitted; full output preserved in artifact ...]\n`;
+    const candidate = byteSlice(head, 0, headBudget).toString("utf8") + marker
+      + byteSlice(capture.tail, capture.tail.length - tailBudget, capture.tail.length).toString("utf8");
+    const candidateCompressed = compressDuplicateLines(candidate);
+    text = Buffer.byteLength(candidateCompressed) < Buffer.byteLength(candidate) ? candidateCompressed : candidate;
+    const overflow = Buffer.byteLength(text) - budget;
+    if (overflow <= 0) break;
+    contentBudget -= overflow;
+  }
+  return { text, truncated: true, omittedBytes: Math.max(0, omitted) };
+}
+
+function isWithin(parent, child) {
+  const relative = path.relative(parent, child);
+  return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
+}
+
+function exclusionPathspecs(repoRoot, excludedPaths) {
+  return excludedPaths
+    .map((excluded) => path.resolve(excluded))
+    .filter((excluded) => isWithin(repoRoot, excluded) && excluded !== repoRoot)
+    .map((excluded) => path.relative(repoRoot, excluded).split(path.sep).join("/"))
+    .map((relative) => `:(exclude)${relative}`);
+}
+
+async function listUntracked(repoRoot, pathspecs) {
+  const result = spawnSync("git", ["ls-files", "--others", "--exclude-standard", "-z", "--", ".", ...pathspecs], {
+    cwd: repoRoot, encoding: "buffer", shell: false,
   });
   if (result.status !== 0) return [];
   return result.stdout.toString("utf8").split("\0").filter(Boolean).sort();
 }
 
-export async function gitStateFingerprint(cwd) {
+export async function gitStateFingerprint(cwd, excludedPaths = []) {
   const root = spawnSync("git", ["rev-parse", "--show-toplevel"], { cwd, encoding: "utf8", shell: false });
   if (root.status !== 0) return sha256(`non-git:${await realpath(cwd)}`);
   const repoRoot = root.stdout.trim();
-  const head = spawnSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8", shell: false });
-  const diff = spawnSync("git", ["diff", "--binary", "HEAD"], { cwd, encoding: "buffer", shell: false });
-  const staged = spawnSync("git", ["diff", "--binary", "--cached"], { cwd, encoding: "buffer", shell: false });
+  const pathspecs = exclusionPathspecs(repoRoot, excludedPaths);
+  const head = spawnSync("git", ["rev-parse", "HEAD"], { cwd: repoRoot, encoding: "utf8", shell: false });
+  const diff = spawnSync("git", ["diff", "--binary", "HEAD", "--", ".", ...pathspecs], {
+    cwd: repoRoot, encoding: "buffer", shell: false,
+  });
+  const staged = spawnSync("git", ["diff", "--binary", "--cached", "--", ".", ...pathspecs], {
+    cwd: repoRoot, encoding: "buffer", shell: false,
+  });
   const hash = createHash("sha256");
   hash.update(head.status === 0 ? head.stdout.trim() : "no-head");
   hash.update(diff.stdout ?? Buffer.alloc(0));
   hash.update(staged.stdout ?? Buffer.alloc(0));
-  for (const relative of await listUntracked(cwd)) {
+  for (const relative of await listUntracked(repoRoot, pathspecs)) {
     const absolute = path.resolve(repoRoot, relative);
     hash.update(relative);
     try {
@@ -136,6 +223,7 @@ export function validateRequest(request) {
   if (typeof request.program !== "string" || request.program.length === 0) throw new Error("program must be a non-empty string");
   if (!Array.isArray(request.args) || request.args.some((arg) => typeof arg !== "string")) throw new Error("args must be an array of strings");
   if (request.cwd !== undefined && typeof request.cwd !== "string") throw new Error("cwd must be a string");
+  if (request.artifactRoot !== undefined && typeof request.artifactRoot !== "string") throw new Error("artifactRoot must be a string");
   for (const key of ["timeoutMs", "successPreviewBytes", "failurePreviewBytes", "hardOutputBytes", "killGraceMs"]) {
     if (request[key] !== undefined && (!Number.isInteger(request[key]) || request[key] <= 0)) throw new Error(`${key} must be a positive integer`);
   }
@@ -147,13 +235,20 @@ export function validateRequest(request) {
   return request;
 }
 
-async function loadIndex(indexPath) {
+async function readJson(filePath) {
   try {
-    const parsed = JSON.parse(await readFile(indexPath, "utf8"));
-    return parsed && typeof parsed === "object" ? parsed : {};
+    const parsed = JSON.parse(await readFile(filePath, "utf8"));
+    return parsed && typeof parsed === "object" ? parsed : null;
   } catch {
-    return {};
+    return null;
   }
+}
+
+async function atomicWriteJson(filePath, value) {
+  await mkdir(path.dirname(filePath), { recursive: true });
+  const temporary = `${filePath}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
+  await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { flag: "wx" });
+  await rename(temporary, filePath);
 }
 
 function terminateTree(child, signal) {
@@ -178,6 +273,13 @@ export async function runBounded(rawRequest, options = {}) {
   }
 
   const artifactRoot = path.resolve(cwd, request.artifactRoot ?? ".codex-efficiency/artifacts");
+  if (artifactRoot === cwd) throw new Error("artifactRoot must not be the working directory");
+
+  const fingerprint = await gitStateFingerprint(cwd, [artifactRoot]);
+  const runKey = await computeRunKey(request, cwd, fingerprint);
+  const historyPath = path.join(artifactRoot, "runs-by-key", `${runKey}.json`);
+  const priorRun = await readJson(historyPath);
+
   const runId = `run_${new Date().toISOString().replace(/[-:.TZ]/g, "")}_${randomBytes(4).toString("hex")}`;
   const artifactDirectory = path.join(artifactRoot, runId);
   await mkdir(artifactDirectory, { recursive: true });
@@ -185,17 +287,11 @@ export async function runBounded(rawRequest, options = {}) {
   const stderrPath = path.join(artifactDirectory, "stderr.log");
   const stdoutFile = createWriteStream(stdoutPath, { flags: "wx" });
   const stderrFile = createWriteStream(stderrPath, { flags: "wx" });
-  const stdoutChunks = [];
-  const stderrChunks = [];
-  let stdoutBytes = 0;
-  let stderrBytes = 0;
+  const hardCap = request.hardOutputBytes ?? HARD_CAP;
+  const stdoutCapture = new BoundedCapture(hardCap);
+  const stderrCapture = new BoundedCapture(hardCap);
   const stdoutHasher = createHash("sha256");
   const stderrHasher = createHash("sha256");
-  const fingerprint = await gitStateFingerprint(cwd);
-  const runKey = await computeRunKey(request, cwd, fingerprint);
-  const indexPath = path.join(artifactRoot, "index.json");
-  const index = await loadIndex(indexPath);
-  const priorRun = index[runKey] ?? null;
   const started = Date.now();
   let timedOut = false;
   let forced = false;
@@ -210,15 +306,13 @@ export async function runBounded(rawRequest, options = {}) {
 
   child.stdout.on("data", (chunk) => {
     const value = Buffer.from(chunk);
-    stdoutBytes += value.length;
-    stdoutChunks.push(value);
+    stdoutCapture.add(value);
     stdoutHasher.update(value);
     stdoutFile.write(value);
   });
   child.stderr.on("data", (chunk) => {
     const value = Buffer.from(chunk);
-    stderrBytes += value.length;
-    stderrChunks.push(value);
+    stderrCapture.add(value);
     stderrHasher.update(value);
     stderrFile.write(value);
   });
@@ -244,18 +338,15 @@ export async function runBounded(rawRequest, options = {}) {
   stderrFile.end();
   await Promise.all([stdoutFinished, stderrFinished]);
 
-  const stdout = Buffer.concat(stdoutChunks);
-  const stderr = Buffer.concat(stderrChunks);
   const failed = timedOut || exitCode !== 0;
   const requestedBudget = failed ? (request.failurePreviewBytes ?? FAILURE_BUDGET) : (request.successPreviewBytes ?? SUCCESS_BUDGET);
-  const hardCap = request.hardOutputBytes ?? HARD_CAP;
   const totalBudget = Math.min(requestedBudget, hardCap);
-  let stderrBudget = stderrBytes === 0 ? 0 : failed ? Math.floor(totalBudget * 0.65) : Math.min(1024, Math.floor(totalBudget * 0.25));
-  let stdoutBudget = stdoutBytes === 0 ? 0 : totalBudget - stderrBudget;
-  if (stdoutBytes === 0) stderrBudget = totalBudget;
-  if (stderrBytes === 0) stdoutBudget = totalBudget;
-  const stdoutPreview = boundedPreview(stdout, stdoutBudget, failed ? "failure" : "success");
-  const stderrPreview = boundedPreview(stderr, stderrBudget, "failure");
+  let stderrBudget = stderrCapture.bytes === 0 ? 0 : failed ? Math.floor(totalBudget * 0.65) : Math.min(1024, Math.floor(totalBudget * 0.25));
+  let stdoutBudget = stdoutCapture.bytes === 0 ? 0 : totalBudget - stderrBudget;
+  if (stdoutCapture.bytes === 0) stderrBudget = totalBudget;
+  if (stderrCapture.bytes === 0) stdoutBudget = totalBudget;
+  const stdoutPreview = previewCapture(stdoutCapture, stdoutBudget, failed ? "failure" : "success");
+  const stderrPreview = previewCapture(stderrCapture, stderrBudget, "failure");
   const returnedBytes = Buffer.byteLength(stdoutPreview.text) + Buffer.byteLength(stderrPreview.text);
   const truncated = stdoutPreview.truncated || stderrPreview.truncated;
   const status = timedOut ? "timed_out" : exitCode === 0 ? "succeeded" : "failed";
@@ -269,10 +360,10 @@ export async function runBounded(rawRequest, options = {}) {
     durationMs: Date.now() - started,
     stdoutPreview: stdoutPreview.text,
     stderrPreview: stderrPreview.text,
-    stdoutBytes,
-    stderrBytes,
-    stdoutLines: stdout.length === 0 ? 0 : stdout.toString("utf8").split("\n").length,
-    stderrLines: stderr.length === 0 ? 0 : stderr.toString("utf8").split("\n").length,
+    stdoutBytes: stdoutCapture.bytes,
+    stderrBytes: stderrCapture.bytes,
+    stdoutLines: stdoutCapture.lines,
+    stderrLines: stderrCapture.lines,
     returnedBytes,
     omittedBytes: stdoutPreview.omittedBytes + stderrPreview.omittedBytes,
     truncated,
@@ -286,10 +377,8 @@ export async function runBounded(rawRequest, options = {}) {
     priorRun: priorRun ? { runId: priorRun.runId, status: priorRun.status } : null,
     repetitionWarning: priorRun ? "Identical command previously ran against the same repository state; execution was not skipped." : null,
   };
-  await writeFile(path.join(artifactDirectory, "metadata.json"), `${JSON.stringify(summary, null, 2)}\n`);
-  index[runKey] = { runId, status, completedAt: new Date().toISOString() };
-  await mkdir(artifactRoot, { recursive: true });
-  await writeFile(indexPath, `${JSON.stringify(index, null, 2)}\n`);
+  await atomicWriteJson(path.join(artifactDirectory, "metadata.json"), summary);
+  await atomicWriteJson(historyPath, { runId, status, completedAt: new Date().toISOString() });
   return summary;
 }
 
@@ -346,7 +435,7 @@ export function parseCliArguments(argv) {
     return { request };
   }
 
-  if (argv.length > 0) throw new Error(`unknown arguments; use --help for usage`);
+  if (argv.length > 0) throw new Error("unknown arguments; use --help for usage");
   return { stdin: true };
 }
 
