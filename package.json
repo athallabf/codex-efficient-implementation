@@ -1,0 +1,13 @@
+{
+  "name": "codex-efficient-implementation",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "node --check efficient-implementation/scripts/bounded-run.mjs && node --test",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

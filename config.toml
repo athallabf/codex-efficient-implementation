@@ -18,8 +18,10 @@ terminal_title = ["activity", "project-name", "five-hour-limit", "weekly-limit"]
 [features]
 memories = true
 prevent_idle_sleep = true
-code_mode = true
 apps = false
+
+[features.code_mode]
+enabled = true
 
 [memories]
 generate_memories = true

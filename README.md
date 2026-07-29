@@ -7,7 +7,7 @@ This repository contains:
 
 - `efficient-implementation/`: the complete reusable skill;
 - `config.toml`: portable model, reasoning, Code Mode, memory, and TUI settings;
-- `AGENTS.md`: portable global judgment, engineering, safety, and verification
+- `AGENTS.md`: portable global judgment, safety, and repository-execution
   defaults that activate the skill for repository work;
 - `RTK.md`: selective Rust Token Killer routing instructions.
 
@@ -57,13 +57,40 @@ Review `AGENTS.md`, then copy it and `RTK.md` into `~/.codex/`, or merge them
 with your existing global instructions. The portable AGENTS file references
 `~/.codex/RTK.md` and omits the unproven always-on Sol batching directive.
 
+Code Mode uses the nested `[features.code_mode]` configuration table. Restart
+Codex after changing global configuration or installing the skill.
+
 The Sol Code Mode batching reference is retained for explicit experiments but
 is not enabled globally. Native Code Mode and normal parallel execution remain
 enabled.
 
 `bounded-run.mjs` is optional. Use it only for predictably noisy commands or
 when complete raw logs must be retained; direct execution is cheaper for
-normally concise checks.
+normally concise checks. Generated artifacts live under `.codex-efficiency/`,
+which should remain ignored by Git.
+
+## Verify the setup
+
+```bash
+codex --version
+rtk --version
+rtk gain
+npm test
+```
+
+After restarting Codex, ask it to state whether the
+`efficient-implementation` skill and global RTK instructions are loaded before
+depending on them for important work.
+
+## Development
+
+The helper uses only Node.js built-ins. Run its tests with:
+
+```bash
+npm test
+```
+
+GitHub Actions runs the same suite on supported Node.js versions.
 
 ## License
 
