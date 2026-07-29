@@ -1,0 +1,32 @@
+# Portable Codex efficiency configuration.
+# Merge this into ~/.codex/config.toml instead of overwriting an existing file.
+# Provider routing, authentication, project trust, hooks, approval policy, and
+# sandbox policy are deliberately omitted because they are machine/user specific.
+
+model = "gpt-5.6-sol"
+model_reasoning_effort = "medium"
+plan_mode_reasoning_effort = "high"
+model_reasoning_summary = "none"
+model_verbosity = "low"
+
+[tui]
+status_line = ["model-with-reasoning", "current-dir", "run-state", "approval-mode", "five-hour-limit", "weekly-limit", "task-progress", "context-used", "used-tokens"]
+status_line_use_colors = true
+pet = "disabled"
+terminal_title = ["activity", "project-name", "five-hour-limit", "weekly-limit"]
+
+[features]
+memories = true
+prevent_idle_sleep = true
+code_mode = true
+apps = false
+
+[memories]
+generate_memories = true
+use_memories = true
+
+[agents]
+enabled = false
+
+[notice]
+hide_rate_limit_model_nudge = true
