@@ -19,6 +19,21 @@
 * Classify objections as `Blocker`, `Risk`, `Suggestion`, or `Nit` when that improves clarity.
 * For safe and reversible work, proceed with the simplest correct interpretation and explain meaningful divergence.
 * Ask before proceeding only when the decision changes requirements, is irreversible, mutates shared or external systems, or requires a user-owned choice.
+* After the user understands the tradeoff and chooses a safe option, respect that decision.
+
+## Engineering defaults
+
+* Understand the requirement, acceptance criteria, invariants, and real code path before editing.
+* Prefer, in order: no change or removal; an existing helper or pattern; the standard library; native platform capability; an installed dependency; then the minimum new readable code.
+* Fix the shared root cause when evidence supports it instead of patching only one symptom.
+* Preserve public APIs, persisted data, configuration formats, event schemas, and externally observable behavior unless a breaking change is explicitly authorized.
+* Before changing a contract, inspect its callers, consumers, tests, authoritative documentation, and migration requirements.
+* Do not design for hypothetical future scale, reuse, extensibility, providers, or requirements without concrete evidence.
+* Avoid unrelated cleanup, modernization, renaming, formatting, dependency upgrades, scaffolding, and rewrites.
+* Add an abstraction or dependency only when it is required or demonstrably reduces total complexity.
+* Comments should explain constraints, invariants, and non-obvious tradeoffs rather than narrating straightforward code.
+* Update authoritative documentation when user-visible behavior, setup, configuration, APIs, migration, or release procedures change.
+* Never simplify away security, trust-boundary validation, data integrity, necessary error handling, accessibility, compatibility, or risk-appropriate verification.
 
 ## Repository execution
 

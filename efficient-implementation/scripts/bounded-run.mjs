@@ -163,9 +163,12 @@ function isWithin(parent, child) {
   return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
 }
 
-function exclusionPathspecs(repoRoot, excludedPaths) {
+function exclusionPathspecs(repoRoot, requestedRepoRoot, excludedPaths) {
   return excludedPaths
     .map((excluded) => path.resolve(excluded))
+    .map((excluded) => isWithin(requestedRepoRoot, excluded)
+      ? path.resolve(repoRoot, path.relative(requestedRepoRoot, excluded))
+      : excluded)
     .filter((excluded) => isWithin(repoRoot, excluded) && excluded !== repoRoot)
     .map((excluded) => path.relative(repoRoot, excluded).split(path.sep).join("/"))
     .map((relative) => `:(exclude)${relative}`);
@@ -180,10 +183,15 @@ async function listUntracked(repoRoot, pathspecs) {
 }
 
 export async function gitStateFingerprint(cwd, excludedPaths = []) {
-  const root = spawnSync("git", ["rev-parse", "--show-toplevel"], { cwd, encoding: "utf8", shell: false });
+  const requestedCwd = path.resolve(cwd);
+  const canonicalCwd = await realpath(requestedCwd);
+  const root = spawnSync("git", ["rev-parse", "--show-toplevel"], {
+    cwd: canonicalCwd, encoding: "utf8", shell: false,
+  });
   if (root.status !== 0) return sha256(`non-git:${await realpath(cwd)}`);
   const repoRoot = root.stdout.trim();
-  const pathspecs = exclusionPathspecs(repoRoot, excludedPaths);
+  const requestedRepoRoot = path.resolve(requestedCwd, path.relative(canonicalCwd, repoRoot));
+  const pathspecs = exclusionPathspecs(repoRoot, requestedRepoRoot, excludedPaths);
   const head = spawnSync("git", ["rev-parse", "HEAD"], { cwd: repoRoot, encoding: "utf8", shell: false });
   const diff = spawnSync("git", ["diff", "--binary", "HEAD", "--", ".", ...pathspecs], {
     cwd: repoRoot, encoding: "buffer", shell: false,

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -69,11 +69,25 @@ test("gitStateFingerprint can exclude generated artifact paths", async () => {
   const withUserChange = await gitStateFingerprint(cwd, [artifactRoot]);
   assert.notEqual(withUserChange, before);
 
-  const { mkdir } = await import("node:fs/promises");
   await mkdir(artifactRoot, { recursive: true });
   await writeFile(path.join(artifactRoot, "generated.log"), "generated\n");
   const afterArtifact = await gitStateFingerprint(cwd, [artifactRoot]);
   assert.equal(afterArtifact, withUserChange);
+});
+
+test("gitStateFingerprint preserves exclusions through an aliased repository path", async () => {
+  const canonicalCwd = await makeRepository();
+  const aliasParent = await mkdtemp(path.join(os.tmpdir(), "bounded-run-alias-"));
+  const cwd = path.join(aliasParent, "repository");
+  await symlink(canonicalCwd, cwd, "dir");
+
+  const artifactRoot = path.join(cwd, ".codex-efficiency", "artifacts");
+  const before = await gitStateFingerprint(cwd, [artifactRoot]);
+  await mkdir(artifactRoot, { recursive: true });
+  await writeFile(path.join(artifactRoot, "generated.log"), "generated\n");
+  const afterArtifact = await gitStateFingerprint(cwd, [artifactRoot]);
+
+  assert.equal(afterArtifact, before);
 });
 
 test("runBounded detects an identical rerun without artifact feedback", async () => {
