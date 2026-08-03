@@ -1,10 +1,10 @@
 # Execution routing
 
-Use native parallel tool calls when two or more operations are independent and all are useful to the current decision.
+Use parallel tool calls when two or more already-selected operations are independent, useful to the current decision, and parallelism reduces latency without weakening sequencing.
 
 For already-selected validation, execute independent commands directly in one native parallel wave. Prefer RTK where available and set modest output limits. Multiple local processes in one wave do not imply multiple model decisions.
 
-Bound the combined result as well as each operation. Parallel execution that returns several large file dumps saves latency but increases context cost. Default to roughly 2–3K output tokens per inspection result and require a specific reason before requesting more than 6K from a combined inspection call.
+Bound each result at the source. Parallel execution that returns several large file dumps may save latency but increases context cost; split waves when the output is not decision-relevant.
 
 Good evidence wave:
 

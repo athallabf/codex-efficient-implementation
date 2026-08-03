@@ -60,9 +60,9 @@ with your existing global instructions. The portable AGENTS file references
 Code Mode uses the nested `[features.code_mode]` configuration table. Restart
 Codex after changing global configuration or installing the skill.
 
-The Sol Code Mode batching reference is retained for explicit experiments but
-is not enabled globally. Native Code Mode and normal parallel execution remain
-enabled.
+The retired Sol Code Mode batching reference is not included in this portable
+export. Native Code Mode and normal parallel execution remain available, but
+no always-on batching rule is installed.
 
 `bounded-run.mjs` is optional. Use it only for predictably noisy commands or
 when complete raw logs must be retained; direct execution is cheaper for
